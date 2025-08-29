@@ -1,6 +1,6 @@
 # gb-heterogeneity-replication
 
-Replication code for master’s thesis on firm-size heterogeneity, comparing Generalized Beta (GB/GB2) and Double Pareto Lognormal (DPLN) distributions using French firm sales (Orbis 2012).
+Code and replication materials for my EGEI master’s thesis on modeling firm-size heterogeneity in trade. Evaluates the Generalized Beta family and alternatives against French firm sales data (Orbis Europe, 2012). Includes distribution fits, statistical comparisons, and reproducible figures/tables.
 
 ---
 
