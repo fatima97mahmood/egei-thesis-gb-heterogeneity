@@ -16,13 +16,40 @@ Replication code for master’s thesis on firm-size heterogeneity, comparing Gen
 This repository contains R code to reproduce the empirical analysis comparing the Generalized Beta (GB) family (GB, GB1, GB2, Beta4, BR12/BR3, etc.) with benchmarks such as Lognormal, Pareto, Weibull, Gamma, and the Double-Pareto Lognormal (DPLN). The main application uses French firm domestic sales (2012), normalized by the sample mean. The pipeline fits distributions, computes log-likelihood, NLL, AIC, BIC, KS, and produces CCDF and Q–Q diagnostics.
 
 ## Data availability & provenance
-- Primary data: Orbis Europe (update 05/06/2020), unconsolidated accounts, France 2012, domestic sales.  
-- Confidentiality: Not redistributed. Users must obtain access from Bureau van Dijk/Orbis via their institution.  
-- Filters: Strictly positive domestic sales; missing values removed; normalized by sample mean.  
-- Expected file: `empirics/input/data/orbis_france.Rdata` (contains a vector of domestic sales; see *Setup gotcha* below).
+- **Primary confidential data (not shared):** Orbis Europe (update 05/06/2020), unconsolidated accounts, France 2012, domestic sales.  
+- **Expected confidential file:** `empirics/input/data/orbis_france.Rdata`  
+  (see *Setup gotchas* below for how to reference correctly).  
 
-If you don’t have Orbis, you can still run the code to replicate model fitting on your own numeric vector, and generate figures/tables from saved fit objects.
+- **Public example data (included in repo):** US city size distribution (Census 2000).  
+  - File: `empirics/input/cities/cities.csv`  
+  - This file can be used to run the code without access to Orbis to validate the pipeline.  
 
+### How to use the US city size data
+In your script, replace the Orbis data loading block with:
+
+```r
+# DATA --------------------------------------------------------------------
+# US Census 2000 City Size Data
+census2000 <- read.csv2(
+  here("empirics","input","cities","cities.csv"),
+  header = FALSE,
+  sep = ","
+)
+
+# Prepare variable in same format
+citysizes <- census2000$V1
+citysizes <- citysizes[citysizes > 0]
+citysizes <- na.omit(citysizes)
+citysizes <- citysizes / mean(citysizes)
+
+xy <- data.frame(
+  var = "citysizes",
+  ind = "Total",
+  varind = "citysizes.Total",
+  year = 2000,
+  value = citysizes
+)
+```
 
 ## Software requirements
 - R ≥ 4.0  
