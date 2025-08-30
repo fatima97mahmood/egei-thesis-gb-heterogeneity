@@ -1024,108 +1024,148 @@ print(latex_tbl,
 # Extensive margin: shares above production / export cutoffs
 # ============================================================
 
-# --------- Choose cutoffs (override if you have model-implied ones) ---------
-c_prod <- quantile(domsales2012, 0.10, na.rm = TRUE)  # production/entry cutoff (left tail)
-c_exp  <- quantile(domsales2012, 0.90, na.rm = TRUE)  # export cutoff (right tail)
-# Example override:
-# c_prod <- 0.25
-# c_exp  <- 3.0
+# --------- Fixed cutoffs (match thesis tables) ---------
+c_prod <- 0.013   # production/entry cutoff (left tail)
+c_exp  <- 1.028   # export cutoff (right tail)
 
-# Empirical shares for reference
-emp_share_prod <- mean(domsales2012 >= c_prod)
-emp_share_exp  <- mean(domsales2012 >= c_exp)
+# --------- Empirical shares for reference ---------
+stopifnot(exists("domsales2012"))
+emp_share_prod <- mean(domsales2012 >= c_prod, na.rm = TRUE)
+emp_share_exp  <- mean(domsales2012 >= c_exp,  na.rm = TRUE)
 
-# --------- Helpers: safe clamp and CDF builders ----------
-# Helper to clamp probs
+# --------- Helpers ---------
 .clamp01 <- function(z) pmin(pmax(z, 0), 1)
+
+# Build a CDF from a PDF on a log-x grid (robust near small x & tails)
+cdf_from_pdf_loggrid <- function(dfun, pars, x_min, x_max, n = 8192L) {
+  stopifnot(x_min > 0, x_max > x_min)
+  xg <- exp(seq(log(x_min), log(x_max), length.out = n))
+  first_arg <- names(formals(dfun))[1]               # e.g., "x" or "y"
+  fg <- do.call(dfun, c(setNames(list(xg), first_arg), pars))
+  fg[!is.finite(fg)] <- 0
+  fg <- pmax(fg, 0)
+  
+  Fg <- c(0, cumsum((head(fg,-1) + tail(fg,-1)) * diff(xg) / 2))  # trapezoid in x
+  Fmax <- tail(Fg, 1)
+  if (!is.finite(Fmax) || Fmax <= 0) stop("PDF integrates to ~0 on grid; widen range.")
+  Fg <- Fg / Fmax
+  Fg <- cummax(.clamp01(Fg))
+  
+  list(
+    F = function(x) {
+      xx <- pmin(pmax(x, x_min), x_max)
+      approx(x = xg, y = Fg, xout = xx, ties = "ordered")$y
+    },
+    grid = list(xg = xg, Fg = Fg, fg = fg)
+  )
+}
 
 # Normalize DPLN param names to what your CDF expects
 .normalize_dpln_pars <- function(pars, target = c("meanlog","sdlog","shape1","shape2")) {
   nm <- names(pars)
-  if (is.null(nm) || any(nm == "")) {
-    # assume order: meanlog, sdlog, shape1, shape2
-    names(pars) <- target
-    return(pars)
-  }
-  # common aliases
+  if (is.null(nm) || any(nm == "")) { names(pars) <- target; return(pars) }
   alias <- c(meanlog="mu", sdlog="sigma", shape1="alpha", shape2="beta")
   out <- setNames(vector("list", length(target)), target)
   for (k in target) {
-    # prefer exact name; else alias; else existing name already matches
     if (k %in% nm) out[[k]] <- pars[[k]]
     else if (alias[k] %in% nm) out[[k]] <- pars[[ alias[k] ]]
-    else out[[k]] <- pars[[k]]  # fallback if already matched
+    else out[[k]] <- pars[[k]]
   }
   out
 }
 
+# --------- Build CDF closures for each distribution ----------
 get_cdf <- function(distname) {
   dn <- tolower(distname)
-  switch(dn,
-         "gb2" = {
-           pars <- setNames(as.numeric(gb21$coefficients[[1]][[1]]), c("a","b","p","q"))
-           function(t) .clamp01(pgb2(t, a = pars["a"], b = pars["b"], p = pars["p"], q = pars["q"]))
-         },
-         "dpln" = {
-           # choose which function exists
-           fn <- if (exists("pdpln")) get("pdpln")
-           else if (exists("pdoubleparetolognormal")) get("pdoubleparetolognormal")
-           else stop("No DPLN CDF found: define pdpln() or pdoubleparetolognormal().")
-           # grab fitted params and normalize names
-           raw <- as.list(unlist(doubleparetolognormal1$coefficients[[1]][[1]]))
-           pars <- .normalize_dpln_pars(raw)
-           # closure: call via do.call with named args
-           function(t) {
-             res <- do.call(fn, c(list(t), pars))
-             .clamp01(res)
-           }
-         },
-         "br12" = {
-           pars <- setNames(as.numeric(br121$coefficients[[1]][[1]]), c("a","b","q"))
-           function(t) .clamp01(pbr12(t, a = pars["a"], b = pars["b"], q = pars["q"]))
-         },
-         "br3" = {
-           pars <- setNames(as.numeric(br31$coefficients[[1]][[1]]), c("a","b","p"))
-           function(t) .clamp01(pbr3(t, a = pars["a"], b = pars["b"], p = pars["p"]))
-         },
-         "fisk" = {
-           pars <- setNames(as.numeric(fisk1$coefficients[[1]][[1]]), c("beta","theta"))
-           function(t) .clamp01(pfisk(t, beta = pars["beta"], theta = pars["theta"]))
-         },
-         "lognormal" = {
-           pars <- lnorm1$coefficients[[1]][[1]]
-           function(t) .clamp01(plnorm(t, meanlog = as.numeric(pars["meanlog",1]),
-                                       sdlog   = as.numeric(pars["sdlog",1])))
-         },
-         "weibull" = {
-           pars <- weibull1$coefficients[[1]][[1]]
-           function(t) .clamp01(pweibull(t, shape = as.numeric(pars["shape",1]),
-                                         scale = as.numeric(pars["scale",1])))
-         },
-         "gamma" = {
-           pars <- gamma1$coefficients[[1]][[1]]
-           function(t) .clamp01(pgamma(t, shape = as.numeric(pars["shape",1]),
-                                       rate  = as.numeric(pars["rate",1])))
-         },
-         "pareto" = {
-           pr <- pareto1$coefficients[[1]][[1]]; xmin <- as.numeric(pr["xmin"]); k <- as.numeric(pr["k"])
-           if (exists("ppareto")) {
-             function(t) .clamp01(ppareto(t, xmin = xmin, k = k))
-           } else {
-             function(t) {
-               y <- t; F <- numeric(length(y))
-               F[y < xmin] <- 0; F[y >= xmin] <- 1 - (xmin / y[y >= xmin])^k
-               .clamp01(F)
-             }
-           }
-         },
-         stop(sprintf("Unknown dist: %s", distname))
-  )
+  
+  if (dn == "gb2") {
+    stopifnot(exists("gb21"))
+    pars <- setNames(as.numeric(gb21$coefficients[[1]][[1]]), c("a","b","p","q"))
+    a <- pars["a"]; b <- pars["b"]; p <- pars["p"]; q <- pars["q"]
+    return(function(t) {
+      z <- (t^a) / (b^a + t^a)
+      .clamp01(pbeta(z, shape1 = p, shape2 = q))       # numerically stable GB2 CDF
+    })
+  }
+  
+  if (dn == "dpln") {
+    fn <- if (exists("pdpln")) get("pdpln") else if (exists("pdoubleparetolognormal")) get("pdoubleparetolognormal") else
+      stop("No DPLN CDF found: pdpln()/pdoubleparetolognormal().")
+    raw <- as.list(unlist(doubleparetolognormal1$coefficients[[1]][[1]]))
+    pars <- .normalize_dpln_pars(raw)
+    return(function(t) .clamp01(do.call(fn, c(list(t), pars))))
+  }
+  
+  if (dn == "br12") {
+    stopifnot(exists("br121"), exists("dbr12"))
+    pars <- list(a = as.numeric(br121$coefficients[[1]][[1]]["a"]),
+                 b = as.numeric(br121$coefficients[[1]][[1]]["b"]),
+                 q = as.numeric(br121$coefficients[[1]][[1]]["q"]))
+    # robust CDF from PDF on log grid
+    xlo <- max(min(domsales2012[domsales2012 > 0]), .Machine$double.eps) / 2
+    xhi <- as.numeric(quantile(domsales2012, 0.9999, na.rm = TRUE)) * 1e3
+    cache <- cdf_from_pdf_loggrid(dfun = dbr12, pars = pars, x_min = xlo, x_max = xhi, n = 8192L)
+    return(function(t) .clamp01(cache$F(t)))
+  }
+  
+  if (dn == "br3") {
+    stopifnot(exists("br31"), exists("dbr3"))
+    pars <- list(a = as.numeric(br31$coefficients[[1]][[1]]["a"]),
+                 b = as.numeric(br31$coefficients[[1]][[1]]["b"]),
+                 p = as.numeric(br31$coefficients[[1]][[1]]["p"]))
+    xlo <- max(min(domsales2012[domsales2012 > 0]), .Machine$double.eps) / 2
+    xhi <- as.numeric(quantile(domsales2012, 0.9999, na.rm = TRUE)) * 1e3
+    cache <- cdf_from_pdf_loggrid(dfun = dbr3, pars = pars, x_min = xlo, x_max = xhi, n = 8192L)
+    return(function(t) .clamp01(cache$F(t)))
+  }
+  
+  if (dn == "fisk") {
+    stopifnot(exists("fisk1"))
+    pars <- setNames(as.numeric(fisk1$coefficients[[1]][[1]]), c("beta","theta"))
+    return(function(t) .clamp01(pfisk(t, beta = pars["beta"], theta = pars["theta"])))
+  }
+  
+  if (dn == "lognormal") {
+    stopifnot(exists("lnorm1"))
+    pars <- lnorm1$coefficients[[1]][[1]]
+    return(function(t) .clamp01(plnorm(t, meanlog = as.numeric(pars["meanlog",1]),
+                                       sdlog   = as.numeric(pars["sdlog",1]))))
+  }
+  
+  if (dn == "weibull") {
+    stopifnot(exists("weibull1"))
+    pars <- weibull1$coefficients[[1]][[1]]
+    return(function(t) .clamp01(pweibull(t, shape = as.numeric(pars["shape",1]),
+                                         scale = as.numeric(pars["scale",1]))))
+  }
+  
+  if (dn == "gamma") {
+    stopifnot(exists("gamma1"))
+    pars <- gamma1$coefficients[[1]][[1]]
+    return(function(t) .clamp01(pgamma(t, shape = as.numeric(pars["shape",1]),
+                                       rate  = as.numeric(pars["rate",1]))))
+  }
+  
+  if (dn == "pareto") {
+    stopifnot(exists("pareto1"))
+    pr <- pareto1$coefficients[[1]][[1]]
+    xmin <- as.numeric(pr["xmin"]); k <- as.numeric(pr["k"])
+    if (exists("ppareto")) {
+      return(function(t) .clamp01(ppareto(t, xmin = xmin, k = k)))
+    } else {
+      return(function(t) {
+        y <- t; F <- numeric(length(y))
+        F[y < xmin] <- 0; F[y >= xmin] <- 1 - (xmin / y[y >= xmin])^k
+        .clamp01(F)
+      })
+    }
+  }
+  
+  stop(sprintf("Unknown dist: %s", distname))
 }
 
-
-# Compute share above a cutoff: 1 - F(c)
-share_above <- function(Fun, c) { .clamp01(1 - Fun(c)) }
+# Share above a cutoff: 1 - F(c)
+share_above <- function(Fun, c) .clamp01(1 - Fun(c))
 
 # --------- Compute implied shares and changes ----------
 dist_list <- c("GB2","DPLN","BR12","BR3","Fisk","Lognormal","Weibull","Gamma","Pareto")
@@ -1135,7 +1175,7 @@ rows <- lapply(dist_list, function(dn) {
   s_prod <- share_above(Fd, c_prod)
   s_exp  <- share_above(Fd, c_exp)
   data.frame(
-    Distribution = dn,
+    Distribution   = dn,
     Share_at_c_prod = s_prod,
     Share_at_c_exp  = s_exp,
     Drop_pp         = (s_prod - s_exp) * 100,      # percentage points
@@ -1145,18 +1185,21 @@ rows <- lapply(dist_list, function(dn) {
 
 extensive_shares <- do.call(rbind, rows)
 
-# Add empirical comparison (as a 'Distribution' = "Empirical" row)
+# Add empirical comparison row
 extensive_shares <- rbind(
   data.frame(Distribution = "Empirical",
              Share_at_c_prod = emp_share_prod,
              Share_at_c_exp  = emp_share_exp,
-             Drop_pp = (emp_share_prod - emp_share_exp) * 100,
-             Ratio_exp_prod = ifelse(emp_share_prod > 0, emp_share_exp / emp_share_prod, NA_real_)),
+             Drop_pp         = (emp_share_prod - emp_share_exp) * 100,
+             Ratio_exp_prod  = ifelse(emp_share_prod > 0, emp_share_exp / emp_share_prod, NA_real_)),
   extensive_shares
 )
 
 # --------- LaTeX table ----------
-cap_txt <- sprintf("Extensive margin: implied shares above production (c=%.3f) and export (c=%.3f) cutoffs. Drop is percentage points; Ratio is share at export cutoff divided by share at production cutoff. Empirical shares from the sample are shown for reference.", c_prod, c_exp)
+cap_txt <- sprintf(
+  "Extensive margin: implied shares above production (c=%.3f) and export (c=%.3f) cutoffs. Drop is percentage points; Ratio is share at export cutoff divided by share at production cutoff. Empirical shares from the sample are shown for reference.",
+  c_prod, c_exp
+)
 
 latex_ext <- xtable::xtable(
   extensive_shares,
@@ -1169,4 +1212,3 @@ print(latex_ext,
       include.rownames = FALSE,
       sanitize.text.function = function(x) x,
       caption.placement = "top")
-
