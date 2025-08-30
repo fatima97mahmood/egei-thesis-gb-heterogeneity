@@ -111,7 +111,10 @@ source(here::here("empirics","code","domsales_france.R"))
 
 - **Fit objects:** `empirics/output/domsales/<dist><components>.Rdata`  
 - **Ranked results:** `empirics/output/eval_cities/loglike_ranked.Rdata`  
-- **Figures:** `empirics/output/distribution_fits/*_{ccdf,qq}.png`  
+- **Figures:** `empirics/output/distribution_fits/*_{ccdf,qq}.png`
+- - **Intensive margin table:** LaTeX format within R window 
+- **Extensive margin table:** LaTeX format within R window 
+
 
 ---
 
@@ -123,6 +126,9 @@ source(here::here("empirics","code","domsales_france.R"))
 | Summary | `domsales_france.R` | `empirics/output/eval_cities/loglike_ranked.Rdata` | Includes NLL/AIC/BIC/KS |
 | LaTeX   | `domsales_france.R` | console output (copy/paste to `.tex`)          | Goodness-of-fit table |
 | Plots   | `axillary_code.R`   | `empirics/output/distribution_fits/*.png`      | CCDF + Q–Q plots |
+| Intensive Margin | `domsales_france.R` | console output (copy/paste to `.tex`) | LaTeX table of implied vs. empirical means |
+| Extensive Margin | `domsales_france.R` | console output (copy/paste to `.tex`) | LaTeX table of implied vs. empirical shares at cutoffs |
+
 
 ---
 
@@ -131,9 +137,17 @@ source(here::here("empirics","code","domsales_france.R"))
 - Add `set.seed(123)` at the top of `domsales_france.R` for stable results.  
 - Optimisers use `optim(..., method="L-BFGS-B")` with sensible bounds.  
 - KS tests rely on analytic CDFs where available, otherwise numeric integration.  
-- GB-family and BR variants may be sensitive to starting values; defaults provided.  
+- GB-family and BR variants may be sensitive to starting values; defaults provided.
+- - Intensive margin tables use either closed-form means (GB2, Lognormal, Weibull, Gamma) or numerical integration of quantile functions (DPLN, BR12, BR3, Fisk, Pareto).  
+- When the mean does not exist (Fisk θ≤1, Pareto k≤1), truncated means at the 99% quantile are reported.  
+- Extensive margin tables compute shares using analytic CDFs where available; otherwise numeric inversion ensures stable results even for heavy tails.
 
 ---
+
+- **LaTeX tables:**  
+  - Goodness-of-fit (loglik/AIC/BIC/KS)  
+  - Intensive margin (implied vs. sample mean)  
+  - Extensive margin (producer vs. exporter shares at cutoffs)
 
 ## Setup gotchas
 
