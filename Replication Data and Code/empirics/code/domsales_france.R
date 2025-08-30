@@ -275,7 +275,7 @@ identify_unreasonable_distributions <- function(results_df) {
 unreasonable_dists <- identify_unreasonable_distributions(results_df)
 
 #Load all saved distribution fits with robust error handling
-all_dist_files <- list.files(here("empirics", "output", "fit_cities"),
+all_dist_files <- list.files(here("empirics", "output", "domsales"),
                              pattern = "\\.Rdata$", full.names = TRUE)
 
 all_dists <- list()
@@ -362,7 +362,7 @@ loglike_ranked <- loglike_filtered %>%
   select(dist, par = np, loglik, NLL, AIC, BIC, ks_statistic, ks_pvalue)
 
 #Save results
-save(loglike_ranked, file = here("empirics", "output", "eval_cities", "loglike_ranked.Rdata"))
+save(loglike_ranked, file = here("empirics", "output", "eval_domsales", "loglike_ranked.Rdata"))
 
 # Latex Table
 create_summary_table <- function(loglike_ranked) {
