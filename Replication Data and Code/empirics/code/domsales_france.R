@@ -809,3 +809,364 @@ params_weib <- c(shape = as.numeric(coef_weib["shape", 1]),
                  scale = as.numeric(coef_weib["scale", 1]))
 weibull_res <- weibull_plots(domsales2012, params = params_weib,
                              save_dir = output_dir, prefix = "weibull_fr2012")
+
+# ============================================================
+# Intensive margin
+# ============================================================
+
+# ---------- Controls ----------
+tau_report <- 0.99   # truncation level used for truncated means shown in the table (when needed)
+
+# ---------- Helpers ----------
+# Robust CDF inversion: try bracketing for uniroot; otherwise fall back to grid inversion
+robust_q_from_cdf <- function(u, cdf_fun, x,
+                              pad_upper = 1e3,
+                              max_expand = 6,
+                              tol = 1e-10, maxit = 200,
+                              grid_n = 8000L) {
+  u <- pmin(pmax(u, .Machine$double.eps), 1 - .Machine$double.eps)
+  
+  xmin <- max(min(x[x > 0], na.rm = TRUE), .Machine$double.eps)
+  xhi0 <- suppressWarnings(quantile(x, 0.9999, na.rm = TRUE))
+  if (!is.finite(xhi0)) xhi0 <- max(x, na.rm = TRUE)
+  if (!is.finite(xhi0) || xhi0 <= 0) xhi0 <- 1
+  lower <- xmin / 2
+  upper <- xhi0 * pad_upper
+  
+  Pl <- suppressWarnings(cdf_fun(lower)); if (!is.finite(Pl)) Pl <- 0
+  Pu <- suppressWarnings(cdf_fun(upper)); if (!is.finite(Pu)) Pu <- 1
+  k <- 0
+  while ((Pu < max(u)) && k < max_expand) {
+    upper <- upper * 10
+    Pu <- suppressWarnings(cdf_fun(upper)); if (!is.finite(Pu)) Pu <- 1
+    k <- k + 1
+  }
+  
+  need_grid <- (Pl > min(u)) || (Pu < max(u)) || !is.finite(Pl) || !is.finite(Pu)
+  if (need_grid) {
+    gx <- exp(seq(log(lower), log(upper), length.out = grid_n))
+    Fg <- suppressWarnings(cdf_fun(gx))
+    Fg[!is.finite(Fg)] <- 0
+    Fg <- pmin(pmax(Fg, 0), 1)
+    Fg <- cummax(Fg)
+    loF <- max(min(Fg), .Machine$double.eps)
+    hiF <- min(max(Fg), 1 - .Machine$double.eps)
+    uu  <- pmin(pmax(u, loF), hiF)
+    return( approx(x = Fg, y = gx, xout = uu, ties = "ordered")$y )
+  }
+  
+  sapply(u, function(p) {
+    uniroot(function(z) cdf_fun(z) - p,
+            interval = c(lower, upper),
+            tol = tol, maxiter = maxit)$root
+  })
+}
+
+# Mean from a quantile function: E[Y] = ∫_0^1 Q(u) du
+mean_from_quantile <- function(qfun, n = 20000L) {
+  u <- seq(0, 1, length.out = n + 2L)[-c(1, n + 2L)]
+  mean(qfun(u))
+}
+
+# Closed-form truncated mean for Pareto (Type I) at tau (0<tau<1)
+# Q(u) = xmin / (1-u)^(1/k)  -> μ_tau = (1/τ) ∫_0^τ Q(u) du
+pareto_trunc_mean <- function(xmin, k, tau) {
+  stopifnot(tau > 0, tau < 1, xmin > 0, k > 0)
+  if (abs(k - 1) < 1e-12) {
+    # limit k -> 1: (xmin/τ) * log(1/(1-τ))
+    (xmin / tau) * log(1 / (1 - tau))
+  } else {
+    # general k ≠ 1: (xmin/τ) * [ k/(k-1) * (1 - (1-τ)^((k-1)/k)) ]
+    (xmin / tau) * (k / (k - 1)) * (1 - (1 - tau)^((k - 1)/k))
+  }
+}
+
+# ---------- Sample mean ----------
+sample_mean <- mean(domsales2012)
+stopifnot(is.finite(sample_mean))
+
+rows <- list()
+
+# ---------- GB2 (a,b,p,q): μ = b * B(p+1/a, q-1/a) / B(p,q); exists iff q > 1/a ----------
+coef_gb2 <- setNames(as.numeric(gb21$coefficients[[1]][[1]]), c("a","b","p","q"))
+im_gb2 <- NA_real_; exists_gb2 <- FALSE
+if (all(is.finite(coef_gb2))) {
+  a <- coef_gb2["a"]; b <- coef_gb2["b"]; p <- coef_gb2["p"]; q <- coef_gb2["q"]
+  exists_gb2 <- (q > 1/a)
+  if (exists_gb2) im_gb2 <- b * beta(p + 1/a, q - 1/a) / beta(p, q)
+}
+rows[["GB2"]] <- data.frame(Distribution="GB2", SampleMean=sample_mean,
+                            ImpliedMean=im_gb2, MeanExists=exists_gb2,
+                            TruncMean_99=NA_real_, Ratio=im_gb2/sample_mean)
+
+# ---------- DPLN: mean via quantile integration ----------
+params_dpln <- unlist(doubleparetolognormal1$coefficients[[1]][[1]])
+qdpln_name  <- if (exists("qdpln")) "qdpln" else if (exists("qdoubleparetolognormal")) "qdoubleparetolognormal" else NA
+pdpln_name  <- if (exists("pdpln")) "pdpln" else if (exists("pdoubleparetolognormal")) "pdoubleparetolognormal" else NA
+im_dpln <- NA_real_
+if (!is.na(qdpln_name)) {
+  Q_dpln <- function(u) do.call(get(qdpln_name), c(list(u), as.list(params_dpln)))
+  im_dpln <- mean_from_quantile(Q_dpln, n = 20000L)
+} else if (!is.na(pdpln_name)) {
+  P_dpln <- function(t) do.call(get(pdpln_name), c(list(t), as.list(params_dpln)))
+  Q_dpln <- function(u) robust_q_from_cdf(u, cdf_fun = P_dpln, x = domsales2012,
+                                          pad_upper = 1e2, max_expand = 6, grid_n = 8000L)
+  im_dpln <- mean_from_quantile(Q_dpln, n = 20000L)
+}
+rows[["DPLN"]] <- data.frame(Distribution="DPLN", SampleMean=sample_mean,
+                             ImpliedMean=im_dpln, MeanExists=TRUE,
+                             TruncMean_99=NA_real_, Ratio=im_dpln/sample_mean)
+
+# ---------- BR12 (a,b,q): mean via robust quantile inversion of pbr12() ----------
+coef_br12 <- setNames(as.numeric(br121$coefficients[[1]][[1]]), c("a","b","q"))
+im_br12 <- NA_real_
+if (all(is.finite(coef_br12))) {
+  P_br12 <- function(t) pbr12(t, a = coef_br12["a"], b = coef_br12["b"], q = coef_br12["q"])
+  Q_br12 <- function(u) robust_q_from_cdf(u, cdf_fun = P_br12, x = domsales2012,
+                                          pad_upper = 1e3, max_expand = 6, grid_n = 8000L)
+  im_br12 <- mean_from_quantile(Q_br12, n = 20000L)
+}
+rows[["BR12"]] <- data.frame(Distribution="BR12", SampleMean=sample_mean,
+                             ImpliedMean=im_br12, MeanExists=TRUE,
+                             TruncMean_99=NA_real_, Ratio=im_br12/sample_mean)
+
+# ---------- BR3 (a,b,p): mean via robust quantile inversion of pbr3() ----------
+coef_br3 <- setNames(as.numeric(br31$coefficients[[1]][[1]]), c("a","b","p"))
+im_br3 <- NA_real_
+if (all(is.finite(coef_br3))) {
+  P_br3 <- function(t) pbr3(t, a = coef_br3["a"], b = coef_br3["b"], p = coef_br3["p"])
+  Q_br3 <- function(u) robust_q_from_cdf(u, cdf_fun = P_br3, x = domsales2012,
+                                         pad_upper = 1e3, max_expand = 6, grid_n = 8000L)
+  im_br3 <- mean_from_quantile(Q_br3, n = 20000L)
+}
+rows[["BR3"]]  <- data.frame(Distribution="BR3", SampleMean=sample_mean,
+                             ImpliedMean=im_br3, MeanExists=TRUE,
+                             TruncMean_99=NA_real_, Ratio=im_br3/sample_mean)
+
+# ---------- Fisk (beta, theta): μ exists iff theta>1; else report truncated mean at tau_report ----------
+coef_fisk <- setNames(as.numeric(fisk1$coefficients[[1]][[1]]), c("beta","theta"))
+im_fisk <- NA_real_; exists_fisk <- FALSE; tmean_fisk <- NA_real_
+if (all(is.finite(coef_fisk))) {
+  beta_f  <- coef_fisk["beta"]; theta_f <- coef_fisk["theta"]
+  exists_fisk <- (theta_f > 1)
+  if (exists_fisk) {
+    im_fisk <- beta_f * (pi/theta_f) / sin(pi/theta_f)  # log-logistic mean
+  } else {
+    P_fk <- function(t) pfisk(t, beta = beta_f, theta = theta_f)
+    Q_fk <- function(u) robust_q_from_cdf(u, cdf_fun = P_fk, x = domsales2012,
+                                          pad_upper = 1e3, max_expand = 6, grid_n = 8000L)
+    tmean_fisk <- (1 / tau_report) * mean_from_quantile(function(u) Q_fk(u * tau_report), n = 20000L)
+  }
+}
+rows[["Fisk"]] <- data.frame(Distribution="Fisk", SampleMean=sample_mean,
+                             ImpliedMean=im_fisk, MeanExists=exists_fisk,
+                             TruncMean_99=tmean_fisk, Ratio=im_fisk/sample_mean)
+
+# ---------- Lognormal (meanlog, sdlog): μ = exp(μ + σ^2/2) ----------
+coef_lnorm <- lnorm1$coefficients[[1]][[1]]  # rows: meanlog, sdlog
+im_lnorm <- exp(as.numeric(coef_lnorm["meanlog", 1]) + 0.5 * as.numeric(coef_lnorm["sdlog", 1])^2)
+rows[["Lognormal"]] <- data.frame(Distribution="Lognormal", SampleMean=sample_mean,
+                                  ImpliedMean=im_lnorm, MeanExists=TRUE,
+                                  TruncMean_99=NA_real_, Ratio=im_lnorm/sample_mean)
+
+# ---------- Weibull (shape, scale): μ = scale * Γ(1 + 1/shape) ----------
+coef_weib <- weibull1$coefficients[[1]][[1]]  # rows: shape, scale
+shape_wb  <- as.numeric(coef_weib["shape", 1])
+scale_wb  <- as.numeric(coef_weib["scale", 1])
+im_weib   <- scale_wb * gamma(1 + 1/shape_wb)
+rows[["Weibull"]] <- data.frame(Distribution="Weibull", SampleMean=sample_mean,
+                                ImpliedMean=im_weib, MeanExists=is.finite(im_weib),
+                                TruncMean_99=NA_real_, Ratio=im_weib/sample_mean)
+
+# ---------- Gamma (shape, rate): μ = shape / rate ----------
+coef_gamma <- gamma1$coefficients[[1]][[1]]   # rows: shape, rate
+shape_ga   <- as.numeric(coef_gamma["shape", 1])
+rate_ga    <- as.numeric(coef_gamma["rate",  1])
+im_gamma   <- shape_ga / rate_ga
+rows[["Gamma"]] <- data.frame(Distribution="Gamma", SampleMean=sample_mean,
+                              ImpliedMean=im_gamma, MeanExists=is.finite(im_gamma),
+                              TruncMean_99=NA_real_, Ratio=im_gamma/sample_mean)
+
+# ---------- Pareto Type I (xmin, k): μ exists iff k>1; else truncated mean at tau_report ----------
+coef_par   <- pareto1$coefficients[[1]][[1]]  # names: xmin, k
+xmin_pa    <- as.numeric(coef_par["xmin"])
+k_pa       <- as.numeric(coef_par["k"])
+exists_par <- is.finite(k_pa) && (k_pa > 1)
+im_par     <- if (exists_par) k_pa * xmin_pa / (k_pa - 1) else NA_real_
+tmean_par  <- pareto_trunc_mean(xmin = xmin_pa, k = k_pa, tau = tau_report)
+rows[["Pareto"]] <- data.frame(Distribution="Pareto", SampleMean=sample_mean,
+                               ImpliedMean=im_par, MeanExists=exists_par,
+                               TruncMean_99=tmean_par, Ratio=im_par/sample_mean)
+
+intensive_means_all <- do.call(rbind, rows)
+
+# Nicely format numerics (optional)
+fmt_cols <- c("SampleMean","ImpliedMean","TruncMean_99","Ratio")
+intensive_means_all[fmt_cols] <- lapply(intensive_means_all[fmt_cols], function(v) {
+  if (is.numeric(v)) as.numeric(format(signif(v, 6), scientific = FALSE)) else v
+})
+
+cap_txt <- sprintf("Intensive margin: implied mean vs. sample mean. Truncated means computed at %d\\%% when the theoretical mean does not exist.",
+                   as.integer(tau_report*100))
+latex_tbl <- xtable::xtable(
+  intensive_means_all,
+  caption = cap_txt,
+  label   = "tab:intensive_means_all",
+  digits  = c(0, 0, 2, 3, 0, 3, 3)
+)
+print(latex_tbl,
+      include.rownames = FALSE,
+      sanitize.text.function = function(x) x,
+      caption.placement = "top")
+
+
+# ============================================================
+# Extensive margin: shares above production / export cutoffs
+# ============================================================
+
+# --------- Choose cutoffs (override if you have model-implied ones) ---------
+c_prod <- quantile(domsales2012, 0.10, na.rm = TRUE)  # production/entry cutoff (left tail)
+c_exp  <- quantile(domsales2012, 0.90, na.rm = TRUE)  # export cutoff (right tail)
+# Example override:
+# c_prod <- 0.25
+# c_exp  <- 3.0
+
+# Empirical shares for reference
+emp_share_prod <- mean(domsales2012 >= c_prod)
+emp_share_exp  <- mean(domsales2012 >= c_exp)
+
+# --------- Helpers: safe clamp and CDF builders ----------
+# Helper to clamp probs
+.clamp01 <- function(z) pmin(pmax(z, 0), 1)
+
+# Normalize DPLN param names to what your CDF expects
+.normalize_dpln_pars <- function(pars, target = c("meanlog","sdlog","shape1","shape2")) {
+  nm <- names(pars)
+  if (is.null(nm) || any(nm == "")) {
+    # assume order: meanlog, sdlog, shape1, shape2
+    names(pars) <- target
+    return(pars)
+  }
+  # common aliases
+  alias <- c(meanlog="mu", sdlog="sigma", shape1="alpha", shape2="beta")
+  out <- setNames(vector("list", length(target)), target)
+  for (k in target) {
+    # prefer exact name; else alias; else existing name already matches
+    if (k %in% nm) out[[k]] <- pars[[k]]
+    else if (alias[k] %in% nm) out[[k]] <- pars[[ alias[k] ]]
+    else out[[k]] <- pars[[k]]  # fallback if already matched
+  }
+  out
+}
+
+get_cdf <- function(distname) {
+  dn <- tolower(distname)
+  switch(dn,
+         "gb2" = {
+           pars <- setNames(as.numeric(gb21$coefficients[[1]][[1]]), c("a","b","p","q"))
+           function(t) .clamp01(pgb2(t, a = pars["a"], b = pars["b"], p = pars["p"], q = pars["q"]))
+         },
+         "dpln" = {
+           # choose which function exists
+           fn <- if (exists("pdpln")) get("pdpln")
+           else if (exists("pdoubleparetolognormal")) get("pdoubleparetolognormal")
+           else stop("No DPLN CDF found: define pdpln() or pdoubleparetolognormal().")
+           # grab fitted params and normalize names
+           raw <- as.list(unlist(doubleparetolognormal1$coefficients[[1]][[1]]))
+           pars <- .normalize_dpln_pars(raw)
+           # closure: call via do.call with named args
+           function(t) {
+             res <- do.call(fn, c(list(t), pars))
+             .clamp01(res)
+           }
+         },
+         "br12" = {
+           pars <- setNames(as.numeric(br121$coefficients[[1]][[1]]), c("a","b","q"))
+           function(t) .clamp01(pbr12(t, a = pars["a"], b = pars["b"], q = pars["q"]))
+         },
+         "br3" = {
+           pars <- setNames(as.numeric(br31$coefficients[[1]][[1]]), c("a","b","p"))
+           function(t) .clamp01(pbr3(t, a = pars["a"], b = pars["b"], p = pars["p"]))
+         },
+         "fisk" = {
+           pars <- setNames(as.numeric(fisk1$coefficients[[1]][[1]]), c("beta","theta"))
+           function(t) .clamp01(pfisk(t, beta = pars["beta"], theta = pars["theta"]))
+         },
+         "lognormal" = {
+           pars <- lnorm1$coefficients[[1]][[1]]
+           function(t) .clamp01(plnorm(t, meanlog = as.numeric(pars["meanlog",1]),
+                                       sdlog   = as.numeric(pars["sdlog",1])))
+         },
+         "weibull" = {
+           pars <- weibull1$coefficients[[1]][[1]]
+           function(t) .clamp01(pweibull(t, shape = as.numeric(pars["shape",1]),
+                                         scale = as.numeric(pars["scale",1])))
+         },
+         "gamma" = {
+           pars <- gamma1$coefficients[[1]][[1]]
+           function(t) .clamp01(pgamma(t, shape = as.numeric(pars["shape",1]),
+                                       rate  = as.numeric(pars["rate",1])))
+         },
+         "pareto" = {
+           pr <- pareto1$coefficients[[1]][[1]]; xmin <- as.numeric(pr["xmin"]); k <- as.numeric(pr["k"])
+           if (exists("ppareto")) {
+             function(t) .clamp01(ppareto(t, xmin = xmin, k = k))
+           } else {
+             function(t) {
+               y <- t; F <- numeric(length(y))
+               F[y < xmin] <- 0; F[y >= xmin] <- 1 - (xmin / y[y >= xmin])^k
+               .clamp01(F)
+             }
+           }
+         },
+         stop(sprintf("Unknown dist: %s", distname))
+  )
+}
+
+
+# Compute share above a cutoff: 1 - F(c)
+share_above <- function(Fun, c) { .clamp01(1 - Fun(c)) }
+
+# --------- Compute implied shares and changes ----------
+dist_list <- c("GB2","DPLN","BR12","BR3","Fisk","Lognormal","Weibull","Gamma","Pareto")
+
+rows <- lapply(dist_list, function(dn) {
+  Fd <- get_cdf(dn)
+  s_prod <- share_above(Fd, c_prod)
+  s_exp  <- share_above(Fd, c_exp)
+  data.frame(
+    Distribution = dn,
+    Share_at_c_prod = s_prod,
+    Share_at_c_exp  = s_exp,
+    Drop_pp         = (s_prod - s_exp) * 100,      # percentage points
+    Ratio_exp_prod  = ifelse(s_prod > 0, s_exp / s_prod, NA_real_)
+  )
+})
+
+extensive_shares <- do.call(rbind, rows)
+
+# Add empirical comparison (as a 'Distribution' = "Empirical" row)
+extensive_shares <- rbind(
+  data.frame(Distribution = "Empirical",
+             Share_at_c_prod = emp_share_prod,
+             Share_at_c_exp  = emp_share_exp,
+             Drop_pp = (emp_share_prod - emp_share_exp) * 100,
+             Ratio_exp_prod = ifelse(emp_share_prod > 0, emp_share_exp / emp_share_prod, NA_real_)),
+  extensive_shares
+)
+
+# --------- LaTeX table ----------
+cap_txt <- sprintf("Extensive margin: implied shares above production (c=%.3f) and export (c=%.3f) cutoffs. Drop is percentage points; Ratio is share at export cutoff divided by share at production cutoff. Empirical shares from the sample are shown for reference.", c_prod, c_exp)
+
+latex_ext <- xtable::xtable(
+  extensive_shares,
+  caption = cap_txt,
+  label   = "tab:extensive_shares",
+  digits  = c(0, 0, 3, 3, 1, 3)
+)
+
+print(latex_ext,
+      include.rownames = FALSE,
+      sanitize.text.function = function(x) x,
+      caption.placement = "top")
+
